@@ -7,6 +7,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"flag"
+	"github.com/zellyn/kooky" 
+	"github.com/zellyn/kooky/browser/chrome"
 )
 
 type Transactions struct {
@@ -51,20 +54,99 @@ type Links struct {
 }
 
 const URL_PRE = "https://api.one.viseca.ch/v1/card/"
-const URL_POST = "/transactions?stateType=unknown&offset=0&pagesize=1000"
+const URL_POST = "/transactions?stateType=unknown&offset=0&pagesize=100"
 
 // arg0: cardID
 // arg1: sessionCookie (e.g. `AL_SESS-S=...`)
 func main() {
-	if len(os.Args) < 3 {
-		log.Fatal("card ID and session cookie args required")
-	}
-	transactions, err := getTransactions(os.Args[1], os.Args[2])
-	if err != nil {
-		log.Fatal(err)
-	}
-	printTransactions(transactions)
+
+	var autocookies bool
+
+	flag.BoolVar(&autocookies, "a", false, "read cookies from browser")
+    flag.Parse()
+
+	values := flag.Args()
+
+	if len(values) == 0 || (autocookies && len(values)!=1){
+        fmt.Println("Usage: viseca-exporter.go [-a] cardID ...")
+        flag.PrintDefaults()
+        os.Exit(1)
+    }
+
+	if (len(values) != 2)  && !autocookies {
+        fmt.Println("Usage: viseca-exporter.go cardID sessioncookie")
+        log.Fatal("card ID and session cookie args required")
+    }
+
+	if len(values) == 2 && !autocookies {
+		transactions, err := getTransactions(values[0], values[1])
+		if err != nil {
+			log.Fatal(err)
+		}
+		printTransactions(transactions)
+    }
+
+	if len(values) == 1 && autocookies {
+		transactions, err := getTransactionsWithJar(values[0])
+		if err != nil {
+			log.Fatal(err)
+		}
+		printTransactions(transactions)
+    }
+
+
 }
+
+func getTransactionsWithJar(cardID string) (Transactions, error) {
+	transactions := Transactions{}
+
+	dir, _ := os.UserConfigDir()
+		cookiesFile := dir + "/Google/Chrome/Default/Cookies"
+		jar, err := chrome.CookieJar(cookiesFile,kooky.DomainHasSuffix("api.one.viseca.ch"))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+
+	client := &http.Client{
+		Jar: jar,
+	}
+
+	url := URL_PRE + cardID + URL_POST
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return transactions, err
+	}
+	req.Header.Add("Accept", "application/json")
+
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return transactions, err
+	}
+	defer resp.Body.Close()
+
+
+	if resp.StatusCode != 200 {
+		return transactions, fmt.Errorf("request failed with status \"%s\"", resp.Status)
+	}
+
+	
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return transactions, err
+	}
+
+	err = json.Unmarshal(data, &transactions)
+	if err != nil {
+		return transactions, err
+	}
+
+	return transactions, nil
+}
+
 
 func getTransactions(cardID, sessionCookie string) (Transactions, error) {
 	transactions := Transactions{}
@@ -103,10 +185,10 @@ func getTransactions(cardID, sessionCookie string) (Transactions, error) {
 }
 
 func printTransactions(transactions Transactions) {
-	fmt.Println("\"TransactionID\",\"Date\",\"Merchant\",\"Amount\",\"PFMCategoryID\",\"PFMCategoryName\"")
+	fmt.Println("\"TransactionID\";\"Date\";\"Merchant\";\"Amount\";\"PFMCategoryID\";\"PFMCategoryName\"")
 
 	for _, v := range transactions.Transactions {
-		fmt.Printf("\"%s\",\"%s\",\"%s\",\"%f\",\"%s\",\"%s\"\n", v.TransactionID, v.Date, getPrettiestMerchantName(v), v.Amount, v.PFMCategory.ID, v.PFMCategory.Name)
+		fmt.Printf("\"%s\";\"%s\";\"%s\";\"%f\";\"%s\";\"%s\"\n", v.TransactionID, v.Date, getPrettiestMerchantName(v), v.Amount, v.PFMCategory.ID, v.PFMCategory.Name)
 	}
 }
 
